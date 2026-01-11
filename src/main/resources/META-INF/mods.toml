@@ -1,0 +1,35 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+issueTrackerURL="https://github.com/JellyCreative/SoulLink/issues"
+
+[[mods]]
+modId="soullink"
+version="${file.jarVersion}"
+displayName="Soul-Link"
+updateJSONURL=""
+displayURL=""
+logoFile="soullink_logo.png"
+credits="JellyCreative"
+authors="JellyCreative"
+description='''
+Soul-Link is a multiplayer mod that links the health, hunger, and knockback of all players together.
+When one player takes damage, all players take that damage.
+When one player heals, all players heal.
+When one player gets hungry, all players get hungry.
+True cooperation required!
+'''
+
+[[dependencies.soullink]]
+modId="forge"
+mandatory=true
+versionRange="[47,)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.soullink]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.21)"
+ordering="NONE"
+side="BOTH"
