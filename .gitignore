@@ -1,6 +1,8 @@
 # Ignore Gradle build files
 .gradle/
 build/
+**/build/
+**/.gradle/
 
 # Ignore IDE files
 .idea/
@@ -10,14 +12,18 @@ build/
 .project
 .classpath
 .settings/
+.vscode/
 
 # Ignore run directories
 run/
 runs/
 run-data/
+**/run/
+**/runs/
 
 # Ignore generated files
 src/generated/
+**/src/generated/
 
 # Ignore local files
 logs/
@@ -27,3 +33,25 @@ local.properties
 # OS files
 .DS_Store
 Thumbs.db
+
+# Ignore Gradle wrapper jar (optional - some projects include it)
+# gradle/wrapper/gradle-wrapper.jar
+
+# Ignore Loom cache
+.loom.lock
+**/.loom.lock
+**/loom-cache/
+remappedSrc/
+**/remappedSrc/
+
+# Ignore bin folders
+bin/
+**/bin/
+
+# Ignore out folders
+out/
+**/out/
+# Ignore heap dumps and crash logs
+*.hprof
+hs_err_pid*
+replay_pid*

@@ -1,0 +1,106 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    id 'net.neoforged.gradle.userdev' version '7.0.142'
+}
+
+version = '1.2.0'
+group = 'com.jellycreative.soullink'
+
+base {
+    archivesName = 'soullink-1.20.6-neoforge'
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+println "Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}"
+
+minecraft {
+    accessTransformers {
+        file('src/main/resources/META-INF/accesstransformer.cfg')
+    }
+}
+
+runs {
+    configureEach {
+        systemProperty 'forge.logging.markers', 'REGISTRIES'
+        systemProperty 'forge.logging.console.level', 'debug'
+        modSource project.sourceSets.main
+    }
+
+    client {
+        systemProperty 'neoforge.enabledGameTestNamespaces', 'soullink'
+    }
+
+    server {
+        systemProperty 'neoforge.enabledGameTestNamespaces', 'soullink'
+        programArgument '--nogui'
+    }
+
+    gameTestServer {
+        systemProperty 'neoforge.enabledGameTestNamespaces', 'soullink'
+    }
+
+    data {
+        programArguments.addAll '--mod', 'soullink', '--all', '--output', file('src/generated/resources/').getAbsolutePath(), '--existing', file('src/main/resources/').getAbsolutePath()
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+dependencies {
+    implementation 'net.neoforged:neoforge:20.6.119'
+}
+
+tasks.withType(ProcessResources).configureEach {
+    var replaceProperties = [
+            minecraft_version: '1.20.6',
+            minecraft_version_range: '[1.20.6,1.21)',
+            neo_version: '20.6.119',
+            neo_version_range: '[20.6,)',
+            loader_version_range: '[4,)',
+            mod_id: 'soullink',
+            mod_name: 'Soul-Link',
+            mod_license: 'MIT',
+            mod_version: version,
+            mod_authors: 'JellyCreative',
+            mod_description: 'Links health, hunger, knockback, and inventory between all players.'
+    ]
+    inputs.properties replaceProperties
+
+    filesMatching(['META-INF/neoforge.mods.toml']) {
+        expand replaceProperties + [project: project]
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+jar {
+    manifest {
+        attributes([
+                "Specification-Title"     : "soullink",
+                "Specification-Vendor"    : "JellyCreative",
+                "Specification-Version"   : "1",
+                "Implementation-Title"    : project.name,
+                "Implementation-Version"  : version,
+                "Implementation-Vendor"   : "JellyCreative",
+                "Implementation-Timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        ])
+    }
+}
+
+publishing {
+    publications {
+        register('mavenJava', MavenPublication) {
+            from components.java
+        }
+    }
+    repositories {
+        maven {
+            url "file://${project.projectDir}/mcmodsrepo"
+        }
+    }
+}

@@ -9,6 +9,8 @@ import net.minecraft.nbt.ListTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.event.server.ServerStartedEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
@@ -21,6 +23,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Manages the shared inventory system for Soul-Link.
@@ -33,6 +36,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * - 9-35: Main inventory
  * - 36-39: Armor (boots, leggings, chestplate, helmet)
  * - 40: Offhand
+ * 
+ * IMPORTANT: This version includes fixes for duplication and item loss bugs:
+ * - Players with open containers (crafting tables, furnaces, etc.) are excluded from sync
+ * - Debouncing prevents rapid sync conflicts
+ * - Cursor items are handled properly
+ * - Version tracking prevents stale data overwrites
  */
 @Mod.EventBusSubscriber(modid = SoulLink.MOD_ID)
 public class SharedInventoryManager {
@@ -45,6 +54,17 @@ public class SharedInventoryManager {
     
     // Track the last known inventory state for each player to detect changes
     private static final ConcurrentHashMap<UUID, List<ItemStack>> lastKnownInventory = new ConcurrentHashMap<>();
+    
+    // Track which players have a container open (crafting table, furnace, chest, etc.)
+    private static final ConcurrentHashMap<UUID, Boolean> playersWithContainerOpen = new ConcurrentHashMap<>();
+    
+    // Debounce: Track last sync time to prevent rapid-fire syncs causing race conditions
+    private static final ConcurrentHashMap<UUID, Long> lastSyncTime = new ConcurrentHashMap<>();
+    private static final long SYNC_DEBOUNCE_MS = 150; // Minimum 150ms between syncs from same player
+    
+    // Global sync version to prevent stale data overwrites
+    private static final AtomicLong globalSyncVersion = new AtomicLong(0);
+    private static final ConcurrentHashMap<UUID, Long> playerSyncVersion = new ConcurrentHashMap<>();
     
     // Lock object for thread-safe operations
     private static final Object inventoryLock = new Object();
@@ -113,10 +133,62 @@ public class SharedInventoryManager {
     }
 
     /**
+     * Mark a player as having a container open (crafting table, furnace, chest, etc.)
+     * This prevents sync from overwriting their inventory mid-transaction.
+     */
+    public static void setContainerOpen(ServerPlayer player, boolean open) {
+        if (open) {
+            playersWithContainerOpen.put(player.getUUID(), true);
+            SoulLink.LOGGER.debug("Player {} opened a container - sync paused for them", player.getName().getString());
+        } else {
+            playersWithContainerOpen.remove(player.getUUID());
+            SoulLink.LOGGER.debug("Player {} closed container - sync resumed", player.getName().getString());
+        }
+    }
+
+    /**
+     * Check if a player has a container open (other than their basic inventory)
+     */
+    public static boolean hasContainerOpen(ServerPlayer player) {
+        // Check our explicit tracking first
+        if (playersWithContainerOpen.getOrDefault(player.getUUID(), false)) {
+            return true;
+        }
+        
+        // Also check the player's current container - if it's not the basic inventory menu, they have something open
+        AbstractContainerMenu container = player.containerMenu;
+        if (container != null && !(container instanceof InventoryMenu)) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    /**
+     * Check if a player is holding an item on their cursor (while dragging items)
+     * Items on cursor should not trigger sync as they may be in transit.
+     */
+    public static boolean isHoldingCursorItem(ServerPlayer player) {
+        return !player.containerMenu.getCarried().isEmpty();
+    }
+
+    /**
      * Copy a player's inventory to the shared inventory
      */
     public static void copyFromPlayer(ServerPlayer player) {
         if (!isEnabled()) return;
+        
+        // SAFETY: Don't copy if player has container open - they might be mid-transaction
+        if (hasContainerOpen(player)) {
+            SoulLink.LOGGER.debug("Skipping copy from {} - container is open", player.getName().getString());
+            return;
+        }
+        
+        // SAFETY: Don't copy if player is dragging an item with their cursor
+        if (isHoldingCursorItem(player)) {
+            SoulLink.LOGGER.debug("Skipping copy from {} - cursor item in transit", player.getName().getString());
+            return;
+        }
         
         synchronized (inventoryLock) {
             Inventory inv = player.getInventory();
@@ -133,12 +205,19 @@ public class SharedInventoryManager {
             
             // Copy offhand (slot 40)
             sharedInventory.set(OFFHAND_SLOT, inv.offhand.get(0).copy());
+            
+            // Increment global version to mark this as the newest state
+            globalSyncVersion.incrementAndGet();
         }
         
         // Update last known inventory for this player
         updateLastKnownInventory(player);
         
-        SoulLink.LOGGER.debug("Copied inventory from player {} to shared inventory", player.getName().getString());
+        // Update this player's sync version since they now have the latest
+        playerSyncVersion.put(player.getUUID(), globalSyncVersion.get());
+        
+        SoulLink.LOGGER.debug("Copied inventory from player {} to shared inventory (version {})", 
+                player.getName().getString(), globalSyncVersion.get());
     }
 
     /**
@@ -149,9 +228,28 @@ public class SharedInventoryManager {
         
         UUID playerId = player.getUUID();
         
-        // Check if we're already syncing this player
+        // Check if we're already syncing this player (prevent loops)
         if (syncingPlayers.getOrDefault(playerId, false)) {
             return;
+        }
+        
+        // SAFETY: Don't apply if player has a container open - could corrupt their transaction
+        if (hasContainerOpen(player)) {
+            SoulLink.LOGGER.debug("Skipping apply to {} - container is open", player.getName().getString());
+            return;
+        }
+        
+        // SAFETY: Don't apply if player is dragging an item with cursor
+        if (isHoldingCursorItem(player)) {
+            SoulLink.LOGGER.debug("Skipping apply to {} - cursor item in transit", player.getName().getString());
+            return;
+        }
+        
+        // Check if this player is already up to date (version check)
+        long currentVersion = globalSyncVersion.get();
+        Long playerVersion = playerSyncVersion.get(playerId);
+        if (playerVersion != null && playerVersion >= currentVersion) {
+            return; // Player already has the latest version
         }
         
         syncingPlayers.put(playerId, true);
@@ -173,6 +271,9 @@ public class SharedInventoryManager {
                 // Apply offhand (slot 40)
                 inv.offhand.set(0, sharedInventory.get(OFFHAND_SLOT).copy());
             }
+            
+            // Update player's sync version
+            playerSyncVersion.put(playerId, globalSyncVersion.get());
             
             // Update last known inventory
             updateLastKnownInventory(player);
@@ -227,15 +328,35 @@ public class SharedInventoryManager {
         
         UUID playerId = player.getUUID();
         
-        // Don't process if we're currently syncing this player
+        // Don't process if we're currently syncing this player (loop prevention)
         if (syncingPlayers.getOrDefault(playerId, false)) {
             return;
+        }
+        
+        // SAFETY: Don't process if player has a container open
+        if (hasContainerOpen(player)) {
+            return;
+        }
+        
+        // SAFETY: Don't process if player is dragging cursor item
+        if (isHoldingCursorItem(player)) {
+            return;
+        }
+        
+        // DEBOUNCE: Prevent rapid sync spam that causes race conditions
+        long now = System.currentTimeMillis();
+        Long lastSync = lastSyncTime.get(playerId);
+        if (lastSync != null && (now - lastSync) < SYNC_DEBOUNCE_MS) {
+            return; // Too soon since last sync from this player
         }
         
         // Check if inventory actually changed
         if (!hasInventoryChanged(player)) {
             return;
         }
+        
+        // Update debounce timestamp
+        lastSyncTime.put(playerId, now);
         
         // Copy player's inventory to shared
         copyFromPlayer(player);
@@ -330,6 +451,9 @@ public class SharedInventoryManager {
         UUID playerId = player.getUUID();
         syncingPlayers.remove(playerId);
         lastKnownInventory.remove(playerId);
+        playersWithContainerOpen.remove(playerId);
+        lastSyncTime.remove(playerId);
+        playerSyncVersion.remove(playerId);
     }
 
     /**
@@ -362,6 +486,7 @@ public class SharedInventoryManager {
         
         tag.put("SharedInventory", itemList);
         tag.putBoolean("Initialized", initialized);
+        tag.putLong("SyncVersion", globalSyncVersion.get());
         
         return tag;
     }
@@ -390,7 +515,10 @@ public class SharedInventoryManager {
         }
         
         initialized = tag.getBoolean("Initialized");
-        SoulLink.LOGGER.info("Loaded shared inventory from world data");
+        if (tag.contains("SyncVersion")) {
+            globalSyncVersion.set(tag.getLong("SyncVersion"));
+        }
+        SoulLink.LOGGER.info("Loaded shared inventory from world data (version {})", globalSyncVersion.get());
     }
 
     /**
@@ -402,6 +530,10 @@ public class SharedInventoryManager {
         }
         lastKnownInventory.clear();
         syncingPlayers.clear();
+        playersWithContainerOpen.clear();
+        lastSyncTime.clear();
+        playerSyncVersion.clear();
+        globalSyncVersion.set(0);
         SoulLink.LOGGER.info("Shared inventory reset");
     }
 

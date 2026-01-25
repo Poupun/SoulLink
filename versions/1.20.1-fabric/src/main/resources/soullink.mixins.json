@@ -1,0 +1,14 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.jellycreative.soullink.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [
+    "ServerPlayerEntityMixin",
+    "LivingEntityDamageMixin"
+  ],
+  "client": [],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
